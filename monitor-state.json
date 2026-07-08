@@ -35,5 +35,43 @@
     }
   },
   "s3Sessions": null,
-  "lastHeartbeat": 1783525951570
+  "lastHeartbeat": 1783525951570,
+  "ticketplus": {
+    "event": {
+      "status": "over",
+      "saleStart": "2026-05-13T12:00:00+08:00",
+      "saleEnd": "2026-05-17T21:00:00+08:00",
+      "payment": [
+        "FREE"
+      ],
+      "hidden": false,
+      "lock": false,
+      "isLottery": true
+    },
+    "sessions": {
+      "s000002003": {
+        "status": "over",
+        "saleStart": "2026-05-13T12:00:00+08:00",
+        "saleEnd": "2026-05-17T21:00:00+08:00",
+        "hidden": false,
+        "lock": null,
+        "exposeStart": "2026-05-11T17:18:00+08:00",
+        "exposeEnd": "2026-11-02T00:00:00+08:00",
+        "orderLimit": 2,
+        "userLimit": 2
+      },
+      "s000002002": {
+        "status": "over",
+        "saleStart": "2026-05-13T12:00:00+08:00",
+        "saleEnd": "2026-05-17T21:00:00+08:00",
+        "hidden": false,
+        "lock": null,
+        "exposeStart": "2026-05-11T17:17:00+08:00",
+        "exposeEnd": "2026-11-02T00:00:00+08:00",
+        "orderLimit": 2,
+        "userLimit": 2
+      }
+    },
+    "s3Sessions": null
+  }
 }
