@@ -150,9 +150,10 @@ async function main() {
   } catch {}
 
   if (!prev) {
+    snapshot.lastHeartbeat = Date.now();
     fs.writeFileSync(CONFIG.STATE_FILE, JSON.stringify(snapshot, null, 2));
     log("已建立初始狀態基準。");
-    await notify("監控已在 GitHub Actions 上啟動，這是測試通知。");
+    await notify("監控已在 GitHub Actions 上啟動，這是測試通知。之後每週會收到一次存活回報。");
     return;
   }
 
@@ -160,10 +161,44 @@ async function main() {
   if (changes.length) {
     log(`偵測到變化：\n  ${changes.join("\n  ")}`);
     await notify(changes.join("\n"), urgent);
+    snapshot.lastHeartbeat = Date.now();
     fs.writeFileSync(CONFIG.STATE_FILE, JSON.stringify(snapshot, null, 2));
+    return;
+  }
+
+  // 心跳機制：每 7 天發一則存活通知，順便更新狀態檔讓 repo 保持活躍，
+  // 避免 GitHub 因 60 天無 commit 而停用排程
+  const HEARTBEAT_INTERVAL = 7 * 24 * 60 * 60 * 1000;
+  const lastHeartbeat = prev.lastHeartbeat || 0;
+  if (Date.now() - lastHeartbeat > HEARTBEAT_INTERVAL) {
+    const days = Math.round((Date.now() - lastHeartbeat) / 86400e3);
+    await notifyPlain(
+      `💚 監控正常運作中（每週回報）\n目前場次狀態：${Object.values(snapshot.sessions)
+        .map((s) => s.status)
+        .join(", ")}\n距離上次回報約 ${lastHeartbeat ? days + " 天" : "首次"}。沒收到這則週報時，請到 GitHub Actions 檢查排程是否被停用。`
+    );
+    snapshot.lastHeartbeat = Date.now();
+    fs.writeFileSync(CONFIG.STATE_FILE, JSON.stringify(snapshot, null, 2));
+    log("已發送每週心跳通知。");
   } else {
     log(`無變化（status: ${Object.values(snapshot.sessions).map((s) => s.status).join(", ")}）`);
   }
+}
+
+// 不加前綴的純通知（心跳用）
+async function notifyPlain(text) {
+  const res = await fetch("https://api.line.me/v2/bot/message/push", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${CONFIG.LINE_CHANNEL_ACCESS_TOKEN}`,
+    },
+    body: JSON.stringify({
+      to: CONFIG.LINE_USER_ID,
+      messages: [{ type: "text", text }],
+    }),
+  });
+  if (!res.ok) log(`LINE 通知失敗：HTTP ${res.status} ${await res.text()}`);
 }
 
 main().catch((e) => {
