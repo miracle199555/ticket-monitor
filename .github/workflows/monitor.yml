@@ -1,0 +1,40 @@
+name: Ticket Plus 釋票監控
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # 每 5 分鐘（實際可能延遲數分鐘）
+  workflow_dispatch:         # 允許手動觸發，方便測試
+
+permissions:
+  contents: write            # 允許把狀態檔 commit 回 repo
+
+concurrency:
+  group: ticket-monitor
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 取出 repo
+        uses: actions/checkout@v4
+
+      - name: 安裝 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 執行監控
+        env:
+          LINE_TOKEN: ${{ secrets.LINE_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+          S3_CONFIG_URL: ${{ secrets.S3_CONFIG_URL }}
+        run: node monitor.js
+
+      - name: 儲存狀態
+        run: |
+          git config user.name "monitor-bot"
+          git config user.email "monitor-bot@users.noreply.github.com"
+          git add monitor-state.json
+          git diff --cached --quiet || git commit -m "update state [skip ci]"
+          git push
