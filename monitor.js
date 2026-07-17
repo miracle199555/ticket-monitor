@@ -223,7 +223,18 @@ async function main() {
     state = JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
   } catch {}
   const firstRun = !state;
-  state = state || { ticketplus: null, kham: {}, lastHeartbeat: 0 };
+  state = state || {};
+  // 相容舊版狀態檔：缺少的欄位補上預設值，避免升級後崩潰
+  if (state.ticketplus === undefined) state.ticketplus = null;
+  if (!state.kham || typeof state.kham !== "object") state.kham = {};
+  if (!state.lastHeartbeat) state.lastHeartbeat = 0;
+  // 舊版把遠大資料存在最外層（event/sessions），搬進 ticketplus 底下
+  if (!state.ticketplus && state.event && state.sessions) {
+    state.ticketplus = { event: state.event, sessions: state.sessions, s3Sessions: state.s3Sessions || null };
+    delete state.event;
+    delete state.sessions;
+    delete state.s3Sessions;
+  }
 
   const notifications = [];
   let anyUrgent = false;
