@@ -35,7 +35,7 @@
     }
   },
   "s3Sessions": null,
-  "lastHeartbeat": 1787581205187,
+  "lastHeartbeat": 1787917091068,
   "ticketplus": {
     "event": {
       "status": "over",
@@ -78,8 +78,8 @@
     "https://kham.com.tw/application/UTK02/UTK0204_.aspx?PERFORMANCE_ID=P18HBTRS&PRODUCT_ID=P18C4VJ0": {
       "平面特1區4880元": "已售完",
       "平面特2區4880元": "已售完",
-      "平面特V區雙號4880元": "已售完",
-      "平面特V區單號4880元": "已售完",
+      "平面特V區雙號4880元": "11",
+      "平面特V區單號4880元": "13",
       "2樓紫2B區4280元": "已售完",
       "2樓紫2C區4280元": "已售完",
       "2樓紫2D區4280元": "已售完",
