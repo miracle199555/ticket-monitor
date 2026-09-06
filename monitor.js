@@ -1,7 +1,7 @@
 /**
  * 釋票監控（GitHub Actions 版）— 多平台
  *   1. 遠大 Ticket Plus：Vaundy ASIA ARENA TOUR 2026（抽選後零星票）
- *   2. 寬宏 KHAM：Official髭男dism 2026 台北站（票區級監控）
+ *   2. 寬宏 KHAM：目前無監控目標（可在 KHAM_TARGETS 加入）
  *
  * 每次執行檢查一輪就結束，由 GitHub Actions 排程反覆喚醒。
  * 憑證從環境變數讀取（GitHub Secrets），狀態檔由 workflow commit 回 repo。
@@ -20,14 +20,11 @@ const TICKETPLUS = {
 };
 
 const KHAM_TARGETS = [
-  {
-    label: "髭男dism 8/30 台北小巨蛋（寬宏）",
-    url: "https://kham.com.tw/application/UTK02/UTK0204_.aspx?PERFORMANCE_ID=P18HBTRS&PRODUCT_ID=P18C4VJ0",
-  },
-  // 8/29 場次：拿到選位頁網址後，取消下面註解並填入
+  // 目前沒有監控中的寬宏場次。
+  // 要加入時，複製下面的範本、填入選位頁網址與名稱即可：
   // {
-  //   label: "髭男dism 8/29 台北小巨蛋（寬宏）",
-  //   url: "https://kham.com.tw/application/UTK02/UTK0204_.aspx?PERFORMANCE_ID=填這裡&PRODUCT_ID=P18C4VJ0",
+  //   label: "活動名稱 場次（寬宏）",
+  //   url: "https://kham.com.tw/application/UTK02/UTK0204_.aspx?PERFORMANCE_ID=xxx&PRODUCT_ID=xxx",
   // },
 ];
 
@@ -302,8 +299,9 @@ async function main() {
       ? Object.values(state.ticketplus.sessions).map((s) => s.status).join(", ")
       : "未知";
     const khamCount = Object.values(state.kham).reduce((n, a) => n + Object.keys(a).length, 0);
+    const khamLine = KHAM_TARGETS.length ? `\n寬宏：追蹤中 ${khamCount} 個票區` : "";
     await pushLine(
-      `💚 監控正常運作中（每週回報）\n遠大 Vaundy：${tpStatus}\n寬宏 髭男dism：追蹤中 ${khamCount} 個票區，全數售完\n沒收到這則週報時，請到 GitHub Actions 檢查排程是否被停用。`
+      `💚 監控正常運作中（每週回報）\n遠大 Vaundy：${tpStatus}${khamLine}\n沒收到這則週報時，請到 GitHub Actions 檢查排程是否被停用。`
     );
     state.lastHeartbeat = Date.now();
     stateChanged = true;
