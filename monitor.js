@@ -1,17 +1,20 @@
 /**
- * 釋票監控（GitHub Actions 版）
+ * 釋票監控（GitHub Actions 長迴圈版）
  *   遠大 Ticket Plus：Vaundy ASIA ARENA TOUR 2026 台北場
+ *   監控目標：正式售票活動 e000001329（a56fce0a...）
  *
- * 監控目標為「正式售票活動」e000001329（a56fce0a...），
- * 而非登記抽選活動 e000001328（後者狀態永久停在 over，不會變動）。
+ * 運作方式：每小時由排程啟動一次，單次執行內以 15 秒為間隔持續檢查
+ * 約 50 分鐘後自行結束，下一輪排程接手，等同全天候 15 秒監控。
  *
- * 每次執行檢查一輪就結束，由 GitHub Actions 排程反覆喚醒。
- * 憑證從環境變數讀取（GitHub Secrets），狀態檔由 workflow commit 回 repo。
+ * 公開 repo 的 Actions 分鐘數無上限，此跑法免費。
  */
 
 const fs = require("fs");
 
-// ===================== 監控目標設定 =====================
+// ===================== 設定 =====================
+
+const INTERVAL_MS = 15000;              // 每輪間隔：15 秒
+const RUN_DURATION_MS = 50 * 60 * 1000; // 單次執行持續：50 分鐘
 
 const TICKETPLUS = {
   label: "Vaundy 台北場（遠大）",
@@ -23,15 +26,6 @@ const TICKETPLUS = {
     "https://apis.ticketplus.com.tw/config/api/v1/getS3?path=event/a56fce0af2da4d41e26b2dfa34b7babc/sessions.json",
 };
 
-const KHAM_TARGETS = [
-  // 目前沒有監控中的寬宏場次。
-  // 要加入時，複製下面的範本、填入選位頁網址與名稱即可：
-  // {
-  //   label: "活動名稱 場次（寬宏）",
-  //   url: "https://kham.com.tw/application/UTK02/UTK0204_.aspx?PERFORMANCE_ID=xxx&PRODUCT_ID=xxx",
-  // },
-];
-
 const LINE = {
   token: process.env.LINE_TOKEN || "",
   userId: process.env.LINE_USER_ID || "",
@@ -42,12 +36,19 @@ const STATE_FILE = "./monitor-state.json";
 // 這些狀態代表「買不到」。只要離開這個清單就視為可能開賣。
 const CLOSED_STATUSES = ["over", "soldout", "end", "notstart"];
 
+const EVENT_FIELDS = ["status", "saleStart", "saleEnd", "payment", "hidden", "lock", "exposeEnd"];
+const SESSION_FIELDS = ["status", "saleStart", "saleEnd", "hidden", "lock", "exposeStart", "exposeEnd", "orderLimit", "userLimit"];
+
 const HEADERS = {
-  accept: "text/html,application/json,*/*",
+  accept: "application/json, text/plain, */*",
   "accept-language": "zh-TW,zh;q=0.9",
+  origin: "https://ticketplus.com.tw",
+  referer: "https://ticketplus.com.tw/",
   "user-agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
 };
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function log(msg) {
   console.log(`[${new Date().toISOString()}] ${msg}`);
@@ -56,24 +57,25 @@ function log(msg) {
 // ===================== LINE 通知 =====================
 
 async function pushLine(text) {
-  const res = await fetch("https://api.line.me/v2/bot/message/push", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${LINE.token}`,
-    },
-    body: JSON.stringify({
-      to: LINE.userId,
-      messages: [{ type: "text", text: text.slice(0, 4900) }],
-    }),
-  });
-  if (!res.ok) log(`LINE 通知失敗：HTTP ${res.status} ${await res.text()}`);
+  try {
+    const res = await fetch("https://api.line.me/v2/bot/message/push", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${LINE.token}`,
+      },
+      body: JSON.stringify({
+        to: LINE.userId,
+        messages: [{ type: "text", text: text.slice(0, 4900) }],
+      }),
+    });
+    if (!res.ok) log(`LINE 通知失敗：HTTP ${res.status} ${await res.text()}`);
+  } catch (e) {
+    log(`LINE 通知失敗：${e.message}`);
+  }
 }
 
-// ===================== 遠大 Ticket Plus =====================
-
-const TP_EVENT_FIELDS = ["status", "saleStart", "saleEnd", "payment", "hidden", "lock", "exposeEnd"];
-const TP_SESSION_FIELDS = ["status", "saleStart", "saleEnd", "hidden", "lock", "exposeStart", "exposeEnd", "orderLimit", "userLimit"];
+// ===================== 抓取與比對 =====================
 
 function pick(obj, fields) {
   const out = {};
@@ -81,7 +83,7 @@ function pick(obj, fields) {
   return out;
 }
 
-async function fetchTicketPlus() {
+async function fetchSnapshot(withSessionList) {
   const url = `https://apis.ticketplus.com.tw/config/api/v1/get?eventId=${TICKETPLUS.eventId}&sessionId=${TICKETPLUS.sessionIds.join(",")}&_=${Date.now()}`;
   const res = await fetch(url, { headers: HEADERS });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -89,11 +91,11 @@ async function fetchTicketPlus() {
   if (data.errCode !== "00") throw new Error(`errCode=${data.errCode}`);
 
   const snap = { event: {}, sessions: {}, s3Sessions: null };
-  for (const ev of data.result.event || []) snap.event = pick(ev, TP_EVENT_FIELDS);
-  for (const s of data.result.session || []) snap.sessions[s.id] = pick(s, TP_SESSION_FIELDS);
+  for (const ev of data.result.event || []) snap.event = pick(ev, EVENT_FIELDS);
+  for (const s of data.result.session || []) snap.sessions[s.id] = pick(s, SESSION_FIELDS);
 
-  // 場次清單設定檔：偵測主辦新增場次
-  if (TICKETPLUS.s3ConfigUrl) {
+  // 場次清單不必每輪都抓，降低對方負擔
+  if (withSessionList && TICKETPLUS.s3ConfigUrl) {
     try {
       const r2 = await fetch(TICKETPLUS.s3ConfigUrl, { headers: HEADERS });
       if (r2.ok) {
@@ -107,12 +109,12 @@ async function fetchTicketPlus() {
   return snap;
 }
 
-function diffTicketPlus(prev, curr) {
+function diffSnapshot(prev, curr) {
   const changes = [];
   let urgent = false;
   const now = Date.now();
 
-  for (const f of TP_EVENT_FIELDS) {
+  for (const f of EVENT_FIELDS) {
     const a = JSON.stringify(prev.event[f]);
     const b = JSON.stringify(curr.event[f]);
     if (a === b) continue;
@@ -135,7 +137,7 @@ function diffTicketPlus(prev, curr) {
       changes.push(`${name} 從回應中消失`);
       continue;
     }
-    for (const f of TP_SESSION_FIELDS) {
+    for (const f of SESSION_FIELDS) {
       const a = JSON.stringify(p[f]);
       const b = JSON.stringify(c[f]);
       if (a === b) continue;
@@ -156,65 +158,19 @@ function diffTicketPlus(prev, curr) {
   return { changes, urgent };
 }
 
-// ===================== 寬宏 KHAM =====================
-
-function stripTags(html) {
-  return html
-    .replace(/<[^>]*>/g, " ")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function parseKhamAreas(html) {
-  const areas = {};
-  const rows = html.match(/<tr[\s\S]*?<\/tr>/gi) || [];
-  for (const row of rows) {
-    const cells = (row.match(/<t[dh][\s\S]*?<\/t[dh]>/gi) || []).map(stripTags);
-    if (cells.length < 3) continue;
-    const areaCell = cells.find((c) => /(區|包廂|樓|排)/.test(c) && c.length <= 40);
-    const status = cells[cells.length - 1];
-    if (!areaCell) continue;
-    if (!/(已售完|熱賣|剩餘|\d)/.test(status)) continue;
-    areas[areaCell] = status;
-  }
-  return areas;
-}
-
-async function fetchKham(target) {
-  const res = await fetch(target.url, { headers: HEADERS });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const html = await res.text();
-  const areas = parseKhamAreas(html);
-  if (Object.keys(areas).length === 0) {
-    throw new Error("解析不到任何票區（頁面結構可能改版）");
-  }
-  return areas;
-}
-
-function diffKham(prev, curr) {
-  const changes = [];
-  let urgent = false;
-  const keys = new Set([...Object.keys(prev), ...Object.keys(curr)]);
-  for (const k of keys) {
-    const p = prev[k];
-    const c = curr[k];
-    if (p === c) continue;
-    if (p === undefined) {
-      changes.push(`新票區出現：${k}（${c}）`);
-      if (c !== "已售完") urgent = true;
-    } else if (c === undefined) {
-      changes.push(`票區消失：${k}（原為 ${p}）`);
-    } else {
-      changes.push(`${k}：${p} → ${c}`);
-      if (c !== "已售完") urgent = true;
-    }
-  }
-  return { changes, urgent };
-}
-
 // ===================== 主流程 =====================
+
+function loadState() {
+  try {
+    return JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function saveState(state) {
+  fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+}
 
 async function main() {
   if (!LINE.token || !LINE.userId) {
@@ -222,101 +178,80 @@ async function main() {
     process.exit(1);
   }
 
-  let state = null;
-  try {
-    state = JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
-  } catch {}
-  const firstRun = !state;
-  state = state || {};
-  if (state.ticketplus === undefined) state.ticketplus = null;
-  if (!state.kham || typeof state.kham !== "object") state.kham = {};
+  let state = loadState() || {};
   if (!state.lastHeartbeat) state.lastHeartbeat = 0;
 
-  // 若狀態檔是舊活動（e000001328）留下的，直接作廢重建，避免誤判
+  // 監控目標變更時作廢舊基準，避免跨活動誤判
   if (state.monitoredEventId !== TICKETPLUS.eventId) {
     state.ticketplus = null;
     state.monitoredEventId = TICKETPLUS.eventId;
+    state.startedNotified = false;
     log(`監控目標已更新為 ${TICKETPLUS.eventId}，重建狀態基準。`);
   }
 
-  const notifications = [];
-  let anyUrgent = false;
-  let stateChanged = false;
+  const deadline = Date.now() + RUN_DURATION_MS;
+  let round = 0;
+  let dirty = false;
 
-  // --- 遠大 ---
-  try {
-    const snap = await fetchTicketPlus();
-    if (!state.ticketplus) {
-      state.ticketplus = snap;
-      stateChanged = true;
-      log(`[遠大] 已建立基準（活動 ${snap.event.status} / 場次 ${Object.values(snap.sessions).map((s) => s.status).join(", ")}）`);
-    } else {
-      const { changes, urgent } = diffTicketPlus(state.ticketplus, snap);
-      if (changes.length) {
-        notifications.push(`【${TICKETPLUS.label}】\n${changes.join("\n")}\n${TICKETPLUS.activityUrl}`);
-        if (urgent) anyUrgent = true;
-        state.ticketplus = snap;
-        stateChanged = true;
-      } else {
-        log(`[遠大] 無變化（活動 ${snap.event.status} / 場次 ${Object.values(snap.sessions).map((s) => s.status).join(", ")}）`);
-      }
-    }
-  } catch (e) {
-    log(`[遠大] 檢查失敗：${e.message}`);
-  }
+  log(`開始長迴圈監控：每 ${INTERVAL_MS / 1000} 秒一輪，持續約 ${RUN_DURATION_MS / 60000} 分鐘。`);
 
-  // --- 寬宏 ---
-  for (const target of KHAM_TARGETS) {
+  while (Date.now() < deadline) {
+    round++;
     try {
-      const areas = await fetchKham(target);
-      const prev = state.kham[target.url];
-      if (!prev) {
-        state.kham[target.url] = areas;
-        stateChanged = true;
-        log(`[寬宏] ${target.label} 已建立基準（${Object.keys(areas).length} 個票區）`);
+      const snap = await fetchSnapshot(round === 1);
+
+      if (!state.ticketplus) {
+        state.ticketplus = snap;
+        dirty = true;
+        log(`已建立基準（活動 ${snap.event.status} / 場次 ${Object.values(snap.sessions).map((s) => s.status).join(", ")}）`);
       } else {
-        const { changes, urgent } = diffKham(prev, areas);
+        // 本輪沒抓場次清單時沿用舊值，避免誤判為消失
+        if (snap.s3Sessions === null) snap.s3Sessions = state.ticketplus.s3Sessions || null;
+
+        const { changes, urgent } = diffSnapshot(state.ticketplus, snap);
         if (changes.length) {
-          notifications.push(`【${target.label}】\n${changes.join("\n")}\n${target.url}`);
-          if (urgent) anyUrgent = true;
-          state.kham[target.url] = areas;
-          stateChanged = true;
-        } else {
-          log(`[寬宏] ${target.label} 無變化（${Object.keys(areas).length} 個票區）`);
+          log(`偵測到變化：\n  ${changes.join("\n  ")}`);
+          await pushLine(
+            (urgent ? "🚨🚨 疑似開賣 🚨🚨\n\n" : "🔔 狀態變化\n\n") +
+              `【${TICKETPLUS.label}】\n${changes.join("\n")}\n${TICKETPLUS.activityUrl}`
+          );
+          state.ticketplus = snap;
+          state.lastHeartbeat = Date.now();
+          dirty = true;
+        } else if (round % 20 === 0) {
+          // 每 20 輪（約 5 分鐘）印一次心跳，讓執行紀錄看得出還活著
+          log(`第 ${round} 輪：無變化（${snap.event.status}）`);
         }
       }
     } catch (e) {
-      log(`[寬宏] ${target.label} 檢查失敗：${e.message}`);
+      log(`第 ${round} 輪檢查失敗：${e.message}`);
     }
+
+    // 啟動通知（首次設定或目標變更後）
+    if (!state.startedNotified && state.ticketplus) {
+      await pushLine(
+        `💚 監控已更新並啟動\n監控目標：Vaundy 正式售票活動\n目前狀態：${state.ticketplus.event.status}\n檢查頻率：每 15 秒\n重新開賣或釋票會立刻通知你。`
+      );
+      state.startedNotified = true;
+      state.lastHeartbeat = Date.now();
+      dirty = true;
+    }
+
+    // 每週存活回報
+    if (Date.now() - state.lastHeartbeat > 7 * 24 * 60 * 60 * 1000) {
+      const st = state.ticketplus ? state.ticketplus.event.status : "未知";
+      await pushLine(
+        `💚 監控正常運作中（每週回報）\nVaundy 正式售票活動狀態：${st}\n檢查頻率：每 15 秒\n沒收到這則週報時，請到 GitHub Actions 檢查排程是否被停用。`
+      );
+      state.lastHeartbeat = Date.now();
+      dirty = true;
+    }
+
+    await sleep(INTERVAL_MS);
   }
 
-  // --- 發通知 ---
-  if (notifications.length) {
-    const prefix = anyUrgent ? "🚨🚨 疑似釋票 🚨🚨\n\n" : "🔔 狀態變化\n\n";
-    await pushLine(prefix + notifications.join("\n\n"));
-    state.lastHeartbeat = Date.now();
-    stateChanged = true;
-  } else if (firstRun || !state.startedNotified) {
-    const st = state.ticketplus ? state.ticketplus.event.status : "未知";
-    await pushLine(
-      `💚 監控已更新並啟動\n監控目標：Vaundy 正式售票活動\n目前狀態：${st}\n重新開賣或釋票會立刻通知你。`
-    );
-    state.startedNotified = true;
-    state.lastHeartbeat = Date.now();
-    stateChanged = true;
-  } else if (Date.now() - (state.lastHeartbeat || 0) > 7 * 24 * 60 * 60 * 1000) {
-    const st = state.ticketplus ? state.ticketplus.event.status : "未知";
-    await pushLine(
-      `💚 監控正常運作中（每週回報）\nVaundy 正式售票活動狀態：${st}\n沒收到這則週報時，請到 GitHub Actions 檢查排程是否被停用。`
-    );
-    state.lastHeartbeat = Date.now();
-    stateChanged = true;
-    log("已發送每週心跳通知。");
-  }
-
-  if (stateChanged) {
-    fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
-  }
+  if (dirty) saveState(state);
+  log(`本輪結束，共檢查 ${round} 次。`);
 }
 
 main().catch((e) => {
