@@ -35,45 +35,8 @@
     }
   },
   "s3Sessions": null,
-  "lastHeartbeat": 1792968096244,
-  "ticketplus": {
-    "event": {
-      "status": "over",
-      "saleStart": "2026-05-13T12:00:00+08:00",
-      "saleEnd": "2026-05-17T21:00:00+08:00",
-      "payment": [
-        "FREE"
-      ],
-      "hidden": false,
-      "lock": false,
-      "isLottery": true
-    },
-    "sessions": {
-      "s000002003": {
-        "status": "over",
-        "saleStart": "2026-05-13T12:00:00+08:00",
-        "saleEnd": "2026-05-17T21:00:00+08:00",
-        "hidden": false,
-        "lock": null,
-        "exposeStart": "2026-05-11T17:18:00+08:00",
-        "exposeEnd": "2026-11-02T00:00:00+08:00",
-        "orderLimit": 2,
-        "userLimit": 2
-      },
-      "s000002002": {
-        "status": "over",
-        "saleStart": "2026-05-13T12:00:00+08:00",
-        "saleEnd": "2026-05-17T21:00:00+08:00",
-        "hidden": false,
-        "lock": null,
-        "exposeStart": "2026-05-11T17:17:00+08:00",
-        "exposeEnd": "2026-11-02T00:00:00+08:00",
-        "orderLimit": 2,
-        "userLimit": 2
-      }
-    },
-    "s3Sessions": null
-  },
+  "lastHeartbeat": 1793085374609,
+  "ticketplus": null,
   "kham": {
     "https://kham.com.tw/application/UTK02/UTK0204_.aspx?PERFORMANCE_ID=P18HBTRS&PRODUCT_ID=P18C4VJ0": {
       "平面特1區4880元": "已售完",
@@ -158,5 +121,7 @@
       "3樓黃3I區800元": "已售完",
       "3樓黃3J區800元": "已售完"
     }
-  }
+  },
+  "monitoredEventId": "e000001329",
+  "startedNotified": true
 }
