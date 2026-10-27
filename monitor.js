@@ -1,37 +1,39 @@
 /**
- * 釋票監控（GitHub Actions 長迴圈版）
- *   遠大 Ticket Plus：Vaundy ASIA ARENA TOUR 2026 台北場
- *   監控目標：正式售票活動 e000001329（a56fce0a...）
+ * 遠大 Ticket Plus 釋票監控 — 本機高頻版
+ *   監控目標：Vaundy 正式售票活動 e000001329
  *
- * 運作方式：每小時由排程啟動一次，單次執行內以 15 秒為間隔持續檢查
- * 約 50 分鐘後自行結束，下一輪排程接手，等同全天候 15 秒監控。
+ * 在自己的電腦上執行，使用住宅 IP，不易被對方防護封鎖，
+ * 因此可以用 15 秒的高頻率檢查。
  *
- * 公開 repo 的 Actions 分鐘數無上限，此跑法免費。
+ * 用法：
+ *   1. 需要 Node.js 18 以上
+ *   2. 把這個檔案放進任一資料夾，在該資料夾開啟命令提示字元
+ *   3. 執行：node local-monitor.js
+ *   4. 視窗保持開啟即持續監控，按 Ctrl+C 停止
  */
 
 const fs = require("fs");
 
 // ===================== 設定 =====================
 
-const INTERVAL_MS = 15000;              // 每輪間隔：15 秒
-const RUN_DURATION_MS = 50 * 60 * 1000; // 單次執行持續：50 分鐘
+const INTERVAL_MS = 15000; // 檢查間隔：15 秒
+
+const LINE = {
+  token: "rPE4l61mS5hla6ARLE4MihMuBQkQzrCW50g7poPQzFbvikt0WfZ8MT+cHiJwvSBAbB8UVS7L9etFPCit6B9P8OPX87QiAclvSeD5fdqL75vOmhCzi2C/qZjqVycRtcP1GyAaLdfTFLlMQI46gNN8SQdB04t89/1O/w1cDnyilFU=",
+  userId: "U6620ed6708644aacdd8e44bc84f074b0",
+};
 
 const TICKETPLUS = {
   label: "Vaundy 台北場（遠大）",
   eventId: "e000001329",
-  sessionIds: ["s000002006", "s000002007"], // 10/31、11/1
+  sessionIds: ["s000002006", "s000002007"],
   sessionNames: { s000002006: "10/31 場", s000002007: "11/1 場" },
   activityUrl: "https://ticketplus.com.tw/activity/a56fce0af2da4d41e26b2dfa34b7babc",
   s3ConfigUrl:
     "https://apis.ticketplus.com.tw/config/api/v1/getS3?path=event/a56fce0af2da4d41e26b2dfa34b7babc/sessions.json",
 };
 
-const LINE = {
-  token: process.env.LINE_TOKEN || "",
-  userId: process.env.LINE_USER_ID || "",
-};
-
-const STATE_FILE = "./monitor-state.json";
+const STATE_FILE = "./local-state.json";
 
 // 這些狀態代表「買不到」。只要離開這個清單就視為可能開賣。
 const CLOSED_STATUSES = ["over", "soldout", "end", "notstart"];
@@ -39,8 +41,7 @@ const CLOSED_STATUSES = ["over", "soldout", "end", "notstart"];
 const EVENT_FIELDS = ["status", "saleStart", "saleEnd", "payment", "hidden", "lock", "exposeEnd"];
 const SESSION_FIELDS = ["status", "saleStart", "saleEnd", "hidden", "lock", "exposeStart", "exposeEnd", "orderLimit", "userLimit"];
 
-// 注意：不要加 origin / referer，實測會觸發對方防護回 403。
-// 這組是長期穩定可通過的最小 headers。
+// 不要加 origin / referer，實測會觸發對方防護回 403
 const HEADERS = {
   accept: "text/html,application/json,*/*",
   "accept-language": "zh-TW,zh;q=0.9",
@@ -51,7 +52,7 @@ const HEADERS = {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function log(msg) {
-  console.log(`[${new Date().toISOString()}] ${msg}`);
+  console.log(`[${new Date().toLocaleTimeString("zh-TW", { hour12: false })}] ${msg}`);
 }
 
 // ===================== LINE 通知 =====================
@@ -94,7 +95,6 @@ async function fetchSnapshot(withSessionList) {
   for (const ev of data.result.event || []) snap.event = pick(ev, EVENT_FIELDS);
   for (const s of data.result.session || []) snap.sessions[s.id] = pick(s, SESSION_FIELDS);
 
-  // 場次清單不必每輪都抓，降低對方負擔
   if (withSessionList && TICKETPLUS.s3ConfigUrl) {
     try {
       const r2 = await fetch(TICKETPLUS.s3ConfigUrl, { headers: HEADERS });
@@ -160,76 +160,49 @@ function diffSnapshot(prev, curr) {
 
 // ===================== 主流程 =====================
 
-function loadState() {
-  try {
-    return JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
-  } catch {
-    return null;
-  }
-}
-
-function saveState(state) {
-  fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
-}
-
 async function main() {
-  if (!LINE.token || !LINE.userId) {
-    console.error("缺少 LINE_TOKEN 或 LINE_USER_ID 環境變數（請設定 GitHub Secrets）");
-    process.exit(1);
-  }
+  let state = null;
+  try {
+    state = JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
+  } catch {}
 
-  let state = loadState() || {};
-  if (!state.lastHeartbeat) state.lastHeartbeat = 0;
+  log("本機高頻監控啟動，先發一則測試通知確認 LINE 設定…");
+  await pushLine("🖥️ 本機高頻監控已啟動（每 15 秒檢查一次）。此視窗關閉即停止。");
 
-  // 監控目標變更時作廢舊基準，避免跨活動誤判
-  if (state.monitoredEventId !== TICKETPLUS.eventId) {
-    state.ticketplus = null;
-    state.monitoredEventId = TICKETPLUS.eventId;
-    state.startedNotified = false;
-    log(`監控目標已更新為 ${TICKETPLUS.eventId}，重建狀態基準。`);
-  }
-
-  const deadline = Date.now() + RUN_DURATION_MS;
   let round = 0;
-  let dirty = false;
-  let consecutiveFails = 0;   // 連續失敗次數
-  let failAlerted = false;    // 是否已就連續失敗發過警示
+  let consecutiveFails = 0;
+  let failAlerted = false;
 
-  log(`開始長迴圈監控：每 ${INTERVAL_MS / 1000} 秒一輪，持續約 ${RUN_DURATION_MS / 60000} 分鐘。`);
-
-  while (Date.now() < deadline) {
+  while (true) {
     round++;
     try {
       const snap = await fetchSnapshot(round === 1);
+
       if (consecutiveFails > 0) {
-        log(`連線恢復（先前連續失敗 ${consecutiveFails} 次）`);
         if (failAlerted) {
-          await pushLine("✅ 監控連線已恢復，繼續正常運作中。");
+          await pushLine("✅ 本機監控連線已恢復。");
           failAlerted = false;
         }
+        log(`連線恢復（先前連續失敗 ${consecutiveFails} 次）`);
         consecutiveFails = 0;
       }
 
-      if (!state.ticketplus) {
-        state.ticketplus = snap;
-        dirty = true;
+      if (!state) {
+        state = snap;
+        fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
         log(`已建立基準（活動 ${snap.event.status} / 場次 ${Object.values(snap.sessions).map((s) => s.status).join(", ")}）`);
       } else {
-        // 本輪沒抓場次清單時沿用舊值，避免誤判為消失
-        if (snap.s3Sessions === null) snap.s3Sessions = state.ticketplus.s3Sessions || null;
-
-        const { changes, urgent } = diffSnapshot(state.ticketplus, snap);
+        if (snap.s3Sessions === null) snap.s3Sessions = state.s3Sessions || null;
+        const { changes, urgent } = diffSnapshot(state, snap);
         if (changes.length) {
           log(`偵測到變化：\n  ${changes.join("\n  ")}`);
           await pushLine(
             (urgent ? "🚨🚨 疑似開賣 🚨🚨\n\n" : "🔔 狀態變化\n\n") +
               `【${TICKETPLUS.label}】\n${changes.join("\n")}\n${TICKETPLUS.activityUrl}`
           );
-          state.ticketplus = snap;
-          state.lastHeartbeat = Date.now();
-          dirty = true;
+          state = snap;
+          fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
         } else if (round % 20 === 0) {
-          // 每 20 輪（約 5 分鐘）印一次心跳，讓執行紀錄看得出還活著
           log(`第 ${round} 輪：無變化（${snap.event.status}）`);
         }
       }
@@ -237,48 +210,20 @@ async function main() {
       consecutiveFails++;
       log(`第 ${round} 輪檢查失敗（連續 ${consecutiveFails} 次）：${e.message}`);
 
-      // 連續失敗 10 次（約 2.5 分鐘）就通知，避免監控靜默失效而不自知
       if (consecutiveFails === 10 && !failAlerted) {
         await pushLine(
-          `⚠️ 監控異常\n連續 ${consecutiveFails} 次無法取得售票資料\n錯誤：${e.message}\n\n監控仍在重試中，但目前處於失效狀態，請留意。`
+          `⚠️ 本機監控異常\n連續 ${consecutiveFails} 次無法取得資料\n錯誤：${e.message}\n\n仍在重試中，請留意。`
         );
         failAlerted = true;
       }
-
-      // 連續失敗超過 5 次時放慢頻率，避免被對方判定為攻擊而封得更嚴
+      // 連續失敗時放慢，避免被判定為攻擊
       if (consecutiveFails > 5) {
         await sleep(Math.min(consecutiveFails * 2000, 60000));
       }
     }
 
-    // 啟動通知（首次設定或目標變更後）
-    if (!state.startedNotified && state.ticketplus) {
-      await pushLine(
-        `💚 監控已更新並啟動\n監控目標：Vaundy 正式售票活動\n目前狀態：${state.ticketplus.event.status}\n檢查頻率：每 15 秒\n重新開賣或釋票會立刻通知你。`
-      );
-      state.startedNotified = true;
-      state.lastHeartbeat = Date.now();
-      dirty = true;
-    }
-
-    // 每週存活回報
-    if (Date.now() - state.lastHeartbeat > 7 * 24 * 60 * 60 * 1000) {
-      const st = state.ticketplus ? state.ticketplus.event.status : "未知";
-      await pushLine(
-        `💚 監控正常運作中（每週回報）\nVaundy 正式售票活動狀態：${st}\n檢查頻率：每 15 秒\n沒收到這則週報時，請到 GitHub Actions 檢查排程是否被停用。`
-      );
-      state.lastHeartbeat = Date.now();
-      dirty = true;
-    }
-
     await sleep(INTERVAL_MS);
   }
-
-  if (dirty) saveState(state);
-  log(`本輪結束，共檢查 ${round} 次。`);
 }
 
-main().catch((e) => {
-  console.error(`執行失敗：${e.message}`);
-  process.exit(1);
-});
+main();
