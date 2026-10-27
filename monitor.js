@@ -39,11 +39,11 @@ const CLOSED_STATUSES = ["over", "soldout", "end", "notstart"];
 const EVENT_FIELDS = ["status", "saleStart", "saleEnd", "payment", "hidden", "lock", "exposeEnd"];
 const SESSION_FIELDS = ["status", "saleStart", "saleEnd", "hidden", "lock", "exposeStart", "exposeEnd", "orderLimit", "userLimit"];
 
+// 注意：不要加 origin / referer，實測會觸發對方防護回 403。
+// 這組是長期穩定可通過的最小 headers。
 const HEADERS = {
-  accept: "application/json, text/plain, */*",
+  accept: "text/html,application/json,*/*",
   "accept-language": "zh-TW,zh;q=0.9",
-  origin: "https://ticketplus.com.tw",
-  referer: "https://ticketplus.com.tw/",
   "user-agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
 };
@@ -192,6 +192,8 @@ async function main() {
   const deadline = Date.now() + RUN_DURATION_MS;
   let round = 0;
   let dirty = false;
+  let consecutiveFails = 0;   // 連續失敗次數
+  let failAlerted = false;    // 是否已就連續失敗發過警示
 
   log(`開始長迴圈監控：每 ${INTERVAL_MS / 1000} 秒一輪，持續約 ${RUN_DURATION_MS / 60000} 分鐘。`);
 
@@ -199,6 +201,14 @@ async function main() {
     round++;
     try {
       const snap = await fetchSnapshot(round === 1);
+      if (consecutiveFails > 0) {
+        log(`連線恢復（先前連續失敗 ${consecutiveFails} 次）`);
+        if (failAlerted) {
+          await pushLine("✅ 監控連線已恢復，繼續正常運作中。");
+          failAlerted = false;
+        }
+        consecutiveFails = 0;
+      }
 
       if (!state.ticketplus) {
         state.ticketplus = snap;
@@ -224,7 +234,21 @@ async function main() {
         }
       }
     } catch (e) {
-      log(`第 ${round} 輪檢查失敗：${e.message}`);
+      consecutiveFails++;
+      log(`第 ${round} 輪檢查失敗（連續 ${consecutiveFails} 次）：${e.message}`);
+
+      // 連續失敗 10 次（約 2.5 分鐘）就通知，避免監控靜默失效而不自知
+      if (consecutiveFails === 10 && !failAlerted) {
+        await pushLine(
+          `⚠️ 監控異常\n連續 ${consecutiveFails} 次無法取得售票資料\n錯誤：${e.message}\n\n監控仍在重試中，但目前處於失效狀態，請留意。`
+        );
+        failAlerted = true;
+      }
+
+      // 連續失敗超過 5 次時放慢頻率，避免被對方判定為攻擊而封得更嚴
+      if (consecutiveFails > 5) {
+        await sleep(Math.min(consecutiveFails * 2000, 60000));
+      }
     }
 
     // 啟動通知（首次設定或目標變更後）
